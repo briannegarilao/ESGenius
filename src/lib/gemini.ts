@@ -1,0 +1,146 @@
+// Using direct fetch API instead of the SDK to avoid version issues
+
+const GEMINI_API_KEY = "AIzaSyDvMR7GQhkzcbtYR1MbJspK37pr8llBDhw";
+
+// The system prompt that instructs Gemini on how to analyze the ESG report
+const systemPrompt = `🔍 You are Gemini, a highly precise ESG (Environmental, Social, Governance) auditor model trained to assess ESG reports for potential greenwashing, unverified claims, or omissions.
+
+🧠 Your instructions:
+
+1. 🧾 The user provides a plain text extract of an ESG report (from a PDF). You must **ONLY** analyze this text. Do **not hallucinate**, guess, or use external data. Do **not assume** any framework unless it is **explicitly** mentioned in the text.
+
+2. 🔍 **Extract this high-priority metadata** if available (leave fields blank or null if not found). Add a field named \`report_metadata\` to your JSON:
+{
+  "company_name": string,
+  "reporting_year": string,
+  "country_or_region": string,
+  "report_type": string
+}
+
+3. 🌐 You must **search the full report text** for mentions of ESG frameworks. A framework (e.g., “GRI Standards”, “SASB”, “TCFD”, “SDGs”) may only be included in your output if **directly referenced** in the document.
+
+4. ♻️ You must also identify and extract common **key ESG disclosures** if present:
+   - GHG emissions breakdown (Scope 1, 2, ideally 3)
+   - Energy mix (% renewable vs fossil)
+   - Waste & recycling stats (especially 100%/zero-waste claims)
+   - ESG oversight (e.g., board or executive accountability)
+   - Materiality assessment process
+
+You do not need to write these as a paragraph — just flag and categorize any questionable claims in the \`flagged_statements\` section.
+
+5. 🚩 Flagged statements must:
+   - Come **exactly as quoted** from the text.
+   - Include a clear, specific explanation based **solely on internal report evidence**.
+   - Be flagged only when lacking data, misaligning with claimed frameworks, or showing potential greenwashing indicators.
+   - Be categorized as either:
+     - 🔺 "Major" — needs deeper cross-checking or shows potentially misleading ESG assurance.
+     - ⚠️ "Minor" — needs clarification or additional context but not immediately misleading.
+
+6. 🎯 Your output must be a valid JSON object (no markdown, no extra commentary) with this exact structure:
+
+{
+  "report_metadata": {
+    "company_name": string,
+    "reporting_year": string,
+    "country_or_region": string,
+    "report_type": string
+  },
+  "confidence_score": number (0–100),
+  "classification": "Major" | "Minor",
+  "frameworks_claimed": [string],
+  "other_frameworks": [string],
+  "flagged_statements": [
+    {
+      "statement": string,
+      "esg_category": "Environmental" | "Social" | "Governance",
+      "reason": string,
+      "risk_level": "Major" | "Minor"
+    }
+  ]
+}
+
+7. 📉 If the report is too short or invalid, return:
+
+{
+  "report_metadata": {
+    "company_name": "",
+    "reporting_year": "",
+    "country_or_region": "",
+    "report_type": ""
+  },
+  "confidence_score": 0,
+  "classification": "Minor",
+  "frameworks_claimed": [],
+  "other_frameworks": [],
+  "flagged_statements": []
+}
+
+📦 Keep JSON clean — no markdown or explanation — and suitable for structured display in a UI panel.`;
+
+// Using direct fetch API to call Gemini
+export async function analyzeESGReport(pdfText: string) {
+  if (!pdfText) {
+    throw new Error("PDF text is empty or null.");
+  }
+
+  // Using the correct model name from the available models list
+  const endpoint = "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent";
+  
+  try {
+    console.log("Calling Gemini API with endpoint:", endpoint);
+    
+    const response = await fetch(`${endpoint}?key=${GEMINI_API_KEY}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [
+              { text: systemPrompt },
+              { text: `\n\n---ESG REPORT TEXT---\n${pdfText.slice(0, 100000)}` } // Limit text size to avoid token limits
+            ]
+          }
+        ],
+        generationConfig: {
+          temperature: 0.2,
+          topP: 0.8,
+          topK: 40,
+          maxOutputTokens: 8192,
+        }
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error("API Error Response:", errorText);
+      throw new Error(`Gemini API error: ${response.status} ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    console.log("Gemini API response structure:", JSON.stringify(Object.keys(data), null, 2));
+    
+    // Extract the generated text from the response
+    const generatedText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    
+    if (!generatedText) {
+      console.error("Unexpected response structure:", JSON.stringify(data, null, 2));
+      throw new Error("No text was generated by the model.");
+    }
+
+    // Clean the output to ensure it's valid JSON
+    const cleanedText = generatedText.replace(/```json/g, "").replace(/```/g, "").trim();
+    
+    try {
+      return JSON.parse(cleanedText);
+    } catch(e) {
+      console.error("Failed to parse Gemini JSON output:", e);
+      console.error("Raw Gemini Output:", cleanedText);
+      throw new Error("Failed to get a valid JSON response from the AI. The output was malformed.");
+    }
+  } catch (error) {
+    console.error("Error calling Gemini API:", error);
+    throw error;
+  }
+} 
